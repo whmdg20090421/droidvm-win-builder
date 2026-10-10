@@ -102,9 +102,9 @@ jobs:
       - name: Build image
         shell: pwsh
         env:
-          SRC_ISO:        "${{ github.workspace }}\files\win11-arm64.iso"
-          OUT_QCOW:       "${{ github.workspace }}\win11-droidvm.qcow2"
-          OUT_VMPKG:      "${{ github.workspace }}\win11-droidvm.vmpkg"
+          SRC_ISO:        "${{ github.workspace }}/files/win11-arm64.iso"
+          OUT_QCOW:       "${{ github.workspace }}/win11-droidvm.qcow2"
+          OUT_VMPKG:      "${{ github.workspace }}/win11-droidvm.vmpkg"
           IMAGE_INDEX:    "${{ inputs.image_index }}"
           DISK_SIZE_MB:   "${{ inputs.disk_size_mb }}"
           COMPRESS_QCOW:  "${{ inputs.compress_qcow }}"
