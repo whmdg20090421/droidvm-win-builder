@@ -1,0 +1,137 @@
+name: Build DroidVM Windows vmpkg
+
+on:
+  workflow_dispatch:
+    inputs:
+      iso_url:
+        description: "Win11 ARM64 ISO URL (downloaded on the runner)"
+        required: true
+        default: "https://software-static.download.prss.microsoft.com/dbazure/888969d5-f34g-4e03-ac9d-1f9786c66749/26200.6584.250915-1905.25h2_ge_release_svc_refresh_CLIENT_CONSUMER_A64FRE_en-us.iso"
+      image_index:
+        description: "install.wim image index (1 = first edition)"
+        required: true
+        default: "1"
+      disk_size_mb:
+        description: "Target Windows disk size (MB)"
+        required: true
+        default: "25600"
+      compress_qcow:
+        description: "zstd-compress qcow2 clusters (1 = smaller image, slower IO)"
+        required: true
+        default: "0"
+      release_tag:
+        description: "Release tag to upload the .vmpkg to"
+        required: true
+        default: "win11-vmpkg"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-2025
+    timeout-minutes: 350
+
+    steps:
+      - name: Maximize disk space (remove preinstalled SDKs)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Continue"
+          Get-PSDrive C | Select-Object Used,Free
+          $paths = @(
+            "C:\hostedtoolcache",
+            "C:\Android",
+            "C:\Program Files\dotnet",
+            "C:\Program Files (x86)\Microsoft SDKs",
+            "C:\Program Files\Microsoft SDKs",
+            "C:\Program Files\Microsoft Visual Studio",
+            "C:\Program Files (x86)\Microsoft Visual Studio",
+            "$env:ProgramFiles\Google\Chrome",
+            "C:\Program Files\Java",
+            "C:\Program Files (x86)\Java",
+            "C:\Program Files\Google",
+            "$env:ProgramData\chocolatey\lib",
+            "C:\Program Files\nodejs"
+          )
+          foreach ($p in $paths) {
+            if (Test-Path $p) {
+              Write-Host "Removing $p"
+              Remove-Item -Recurse -Force $p -ErrorAction SilentlyContinue
+            }
+          }
+          # Move pagefile off C: if possible (best effort)
+          Write-Host "Free after cleanup:"
+          Get-PSDrive C | Select-Object Used,Free
+
+      - name: Checkout (builder + repo files)
+        uses: actions/checkout@v4
+        with:
+          path: repo
+
+      - name: Clone upstream image builder
+        shell: pwsh
+        run: |
+          git clone --depth 1 https://github.com/Droid-VM/win11-arm64-image-builder.git "$env:GITHUB_WORKSPACE\win11-arm64-image-builder"
+
+      - name: Install QEMU (qemu-img)
+        shell: pwsh
+        run: |
+          choco install qemu --no-progress -y
+          $q = "C:\Program Files\qemu"
+          if (Test-Path "$q\qemu-img.exe") {
+            "C:\Program Files\qemu" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+            & "$q\qemu-img.exe" --version
+          } else {
+            throw "qemu-img.exe not found after chocolatey install"
+          }
+
+      - name: Download Windows ARM64 ISO
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force "$env:GITHUB_WORKSPACE\files" | Out-Null
+          $dst = "$env:GITHUB_WORKSPACE\files\win11-arm64.iso"
+          Write-Host "Downloading ${{ inputs.iso_url }}"
+          $sw = [System.Diagnostics.Stopwatch]::StartNew()
+          curl.exe -L --fail --retry 3 --retry-delay 5 -o $dst "${{ inputs.iso_url }}"
+          if ($LASTEXITCODE -ne 0) { throw "ISO download failed" }
+          $sw.Stop()
+          $len = (Get-Item $dst).Length
+          Write-Host ("Downloaded {0:N2} GB in {1:N1} min" -f ($len/1GB), $sw.Elapsed.TotalMinutes)
+          if ($len -lt 1GB) { throw "ISO too small ($len bytes) - download likely failed" }
+
+      - name: Build image
+        shell: pwsh
+        env:
+          SRC_ISO:        "${{ github.workspace }}\files\win11-arm64.iso"
+          OUT_QCOW:       "${{ github.workspace }}\win11-droidvm.qcow2"
+          OUT_VMPKG:      "${{ github.workspace }}\win11-droidvm.vmpkg"
+          IMAGE_INDEX:    "${{ inputs.image_index }}"
+          DISK_SIZE_MB:   "${{ inputs.disk_size_mb }}"
+          COMPRESS_QCOW:  "${{ inputs.compress_qcow }}"
+          EMS_SAC_SOURCE: "skip"
+        run: |
+          $env:GITHUB_WORKSPACE = "${{ github.workspace }}"
+          Copy-Item "${{ github.workspace }}\repo\windows_build.ps1" "${{ github.workspace }}\windows_build.ps1" -Force
+          & "${{ github.workspace }}\windows_build.ps1"
+          if ($LASTEXITCODE -ne 0) { throw "build failed (exit $LASTEXITCODE)" }
+
+      - name: Show results
+        shell: pwsh
+        run: |
+          Get-ChildItem "${{ github.workspace }}" -Filter *.vmpkg | Select-Object Name,Length
+          Get-ChildItem "${{ github.workspace }}" -Filter *.qcow2 | Select-Object Name,Length
+          Get-PSDrive C | Select-Object Used,Free
+
+      - name: Upload .vmpkg to Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "${{ inputs.release_tag }}"
+          $pkg = Get-ChildItem "${{ github.workspace }}" -Filter *.vmpkg | Select-Object -First 1
+          if (-not $pkg) { throw "no .vmpkg produced" }
+          gh release view $tag 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $tag --title "DroidVM Win11 ARM64 vmpkg" --notes "Automated build $(Get-Date -Format o)"
+          }
+          gh release upload $tag $pkg.FullName --clobber
