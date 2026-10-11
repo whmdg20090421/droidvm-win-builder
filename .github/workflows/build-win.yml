@@ -133,8 +133,9 @@ jobs:
           if (-not $pkg) { throw "no .vmpkg produced" }
 
           # GitHub Release caps each asset at 2 GiB (2147483648 bytes).
-          # Split into 1900 MiB volumes so every part is comfortably under the cap.
-          $chunkSize = 1900MB
+          # Split into 1 GiB volumes: every part well under the cap, and each
+          # part is small enough to fetch independently on the phone.
+          $chunkSize = 1024MB
           $dir = $pkg.DirectoryName
           $base = $pkg.Name
           $in = [System.IO.File]::OpenRead($pkg.FullName)
