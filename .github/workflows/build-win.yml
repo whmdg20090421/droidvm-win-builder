@@ -122,7 +122,7 @@ jobs:
           Get-ChildItem "${{ github.workspace }}" -Filter *.qcow2 | Select-Object Name,Length
           Get-PSDrive C | Select-Object Used,Free
 
-      - name: Upload .vmpkg to Release
+      - name: Split .vmpkg into <2GB volumes and upload to Release
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -131,8 +131,46 @@ jobs:
           $tag = "${{ inputs.release_tag }}"
           $pkg = Get-ChildItem "${{ github.workspace }}" -Filter *.vmpkg | Select-Object -First 1
           if (-not $pkg) { throw "no .vmpkg produced" }
+
+          # GitHub Release caps each asset at 2 GiB (2147483648 bytes).
+          # Split into 1900 MiB volumes so every part is comfortably under the cap.
+          $chunkSize = 1900MB
+          $dir = $pkg.DirectoryName
+          $base = $pkg.Name
+          $in = [System.IO.File]::OpenRead($pkg.FullName)
+          try {
+            $buf = New-Object byte[] (8MB)
+            $idx = 0
+            while ($in.Position -lt $in.Length) {
+              $idx++
+              $partName = "{0}.part{1:D3}" -f $base, $idx
+              $partPath = Join-Path $dir $partName
+              $out = [System.IO.File]::Create($partPath)
+              try {
+                $remaining = [Math]::Min([int64]$chunkSize, $in.Length - $in.Position)
+                while ($remaining -gt 0) {
+                  $toRead = [Math]::Min([int64]$buf.Length, $remaining)
+                  $read = $in.Read($buf, 0, [int]$toRead)
+                  if ($read -le 0) { break }
+                  $out.Write($buf, 0, $read)
+                  $remaining -= $read
+                }
+              } finally { $out.Close() }
+              $sz = (Get-Item $partPath).Length
+              Write-Host ("Created {0} ({1:N2} GiB)" -f $partName, ($sz/1GB))
+            }
+          } finally { $in.Close() }
+
+          # SHA256 of the reassembled file for integrity verification on the device.
+          (Get-FileHash $pkg.FullName -Algorithm SHA256).Hash | Set-Content "$dir\win11-droidvm.vmpkg.sha256"
+          Get-Content "$dir\win11-droidvm.vmpkg.sha256"
+
           gh release view $tag -R $repo *> $null
           if ($LASTEXITCODE -ne 0) {
-            gh release create $tag -R $repo --title "DroidVM Win11 ARM64 vmpkg" --notes "Automated build $(Get-Date -Format o)"
+            gh release create $tag -R $repo --title "DroidVM Win11 ARM64 vmpkg" --notes "Split volumes. Reassemble: cat win11-droidvm.vmpkg.part* > win11-droidvm.vmpkg"
           }
-          gh release upload $tag $pkg.FullName --clobber -R $repo
+          Get-ChildItem $dir -Filter "$base.part*" | Sort-Object Name | ForEach-Object {
+            Write-Host "Uploading $($_.Name) ..."
+            gh release upload $tag $_.FullName --clobber -R $repo
+          }
+          gh release upload $tag "$dir\win11-droidvm.vmpkg.sha256" --clobber -R $repo
