@@ -7,6 +7,10 @@ on:
         description: "Win11 ARM64 ISO URL (downloaded on the runner)"
         required: true
         default: "https://software-static.download.prss.microsoft.com/dbazure/888969d5-f34g-4e03-ac9d-1f9786c66749/26200.6584.250915-1905.25h2_ge_release_svc_refresh_CLIENT_CONSUMER_A64FRE_en-us.iso"
+      iso_cache_key:
+        description: "Cache key for the ISO (bump me when iso_url changes)"
+        required: true
+        default: "win11-arm64-26200.6584"
       image_index:
         description: "install.wim image index (1 = first edition)"
         required: true
@@ -73,19 +77,41 @@ jobs:
         run: |
           git clone --depth 1 https://github.com/Droid-VM/win11-arm64-image-builder.git "$env:GITHUB_WORKSPACE\win11-arm64-image-builder"
 
+      - name: Restore QEMU from cache
+        id: qemu-cache
+        uses: actions/cache@v4
+        with:
+          path: C:\Program Files\qemu
+          key: qemu-win-x64-v1
+
       - name: Install QEMU (qemu-img)
+        if: steps.qemu-cache.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
           choco install qemu --no-progress -y
           $q = "C:\Program Files\qemu"
-          if (Test-Path "$q\qemu-img.exe") {
-            "C:\Program Files\qemu" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
-            & "$q\qemu-img.exe" --version
-          } else {
+          if (-not (Test-Path "$q\qemu-img.exe")) {
             throw "qemu-img.exe not found after chocolatey install"
           }
+          & "$q\qemu-img.exe" --version
+
+      - name: Add QEMU to PATH
+        shell: pwsh
+        run: |
+          $q = "C:\Program Files\qemu"
+          if (-not (Test-Path "$q\qemu-img.exe")) { throw "qemu-img.exe missing" }
+          $q | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+          & "$q\qemu-img.exe" --version
+
+      - name: Restore Windows ISO from cache
+        id: iso-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/files/win11-arm64.iso
+          key: ${{ inputs.iso_cache_key }}
 
       - name: Download Windows ARM64 ISO
+        if: steps.iso-cache.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force "$env:GITHUB_WORKSPACE\files" | Out-Null
