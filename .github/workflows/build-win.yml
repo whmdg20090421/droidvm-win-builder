@@ -127,11 +127,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          $repo = "${{ github.repository }}"
           $tag = "${{ inputs.release_tag }}"
           $pkg = Get-ChildItem "${{ github.workspace }}" -Filter *.vmpkg | Select-Object -First 1
           if (-not $pkg) { throw "no .vmpkg produced" }
-          gh release view $tag 2>$null
+          gh release view $tag -R $repo *> $null
           if ($LASTEXITCODE -ne 0) {
-            gh release create $tag --title "DroidVM Win11 ARM64 vmpkg" --notes "Automated build $(Get-Date -Format o)"
+            gh release create $tag -R $repo --title "DroidVM Win11 ARM64 vmpkg" --notes "Automated build $(Get-Date -Format o)"
           }
-          gh release upload $tag $pkg.FullName --clobber
+          gh release upload $tag $pkg.FullName --clobber -R $repo
